@@ -2,6 +2,8 @@
 
 当前版本：**v2.2.0 · 2026-11-26**。用于嵌入式原理与应用课程展示，基于 STM32F103C8、FreeRTOS 和 Proteus 8.17。
 
+主分支包含 v2.2.0 之后的翻页响应更新（`2026-11-26-page-response`）；原 v2.2.0 标签保留原始版本。**已知问题：Proteus 手动翻页按钮仍有回弹卡顿反馈，尚未确认修复。** 已排查按钮参数与 OLED 传输负载，详见 [翻页回弹原因排查](Validation/翻页回弹原因排查.txt)。当前 HEX 保留正常中文显示，不含临时停用像素传输的诊断改动。
+
 ## 直接运行
 
 1. 克隆或下载完整仓库，保留目录结构。
@@ -68,9 +70,13 @@ Keil 构建为 0 错误、0 警告；本机 Proteus 验证覆盖中文显示、�
 ```powershell
 .\Validation\Run-ModelChecks.ps1 -ZigPath 'C:\工具链\zig.exe'
 .\Validation\Run-DisplayChecks.ps1 -ZigPath 'C:\工具链\zig.exe'
+.\Validation\Run-PageKeyChecks.ps1 -ZigPath 'C:\工具链\zig.exe'
+.\Validation\Run-DisplayLoadCheck.ps1 -ZigPath 'C:\工具链\zig.exe'
 ```
 
 模型检查覆盖快速程序完成、进排水超时、不平衡重试、暂停继续、超温分支、自检恢复；显示检查从当前驱动提取真实函数，验证缓存和局部更新。主机检查不覆盖 MCU 外设或 FreeRTOS 调度。
+
+按键检查验证中断屏蔽、首次按下通知及释放消抖；负载脚本比较实际驱动的像素发送量。以上检查不能代替 Proteus 中鼠标松开至图形回弹的实际时间验证。Validation 中各阶段记录保留当时测试状态，最新结论以翻页回弹排查记录为准。
 
 如需新增汉字，可使用 Python + Pillow 运行 `Validation/Generate-OledFont.py`；该脚本需要 Windows 宋体和 Consolas，生成的字模已包含在工程中，正常编译不需要 Python。
 

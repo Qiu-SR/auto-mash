@@ -26,6 +26,9 @@ typedef struct
 
 static SharedState_t s_shared;
 static xSemaphoreHandle s_sharedMutex;
+static xSemaphoreHandle s_displayWake;
+static volatile uint32_t s_displayPaintMs;
+static volatile uint32_t s_displayMaxPaintMs;
 static xQueueHandle s_sensorQueue;
 static xQueueHandle s_actuatorQueue;
 static xQueueHandle s_eventQueue;
@@ -38,6 +41,46 @@ static LogRecord_t s_logReadback[LOG_MAX_RECORDS];
 static uint8_t s_stream;
 /* 0～2 表示固定显示对应页面，3 表示自动轮换页面。 */
 static volatile uint8_t s_lcdSelection = 0U;
+static volatile uint8_t s_pageArmed;
+static volatile uint8_t s_pageReleaseTicks;
+static volatile uint8_t s_pageRequestPending;
+static volatile portTickType s_pageRequestTick;
+static volatile uint32_t s_pageLatencyMs;
+static volatile uint32_t s_pageMaxLatencyMs;
+
+/* 在首次按下沿选页；按键稳定释放后才允许下一次翻页。 */
+void App_PagePressedIrq(void)
+{
+    portBASE_TYPE higherPriorityTaskWoken = pdFALSE;
+    if (s_pageArmed != 0U)
+    {
+        s_pageArmed = 0U;
+        s_pageReleaseTicks = 0U;
+        s_lcdSelection = s_lcdSelection < 3U ? (uint8_t)((s_lcdSelection + 1U) % 3U) : 0U;
+        s_pageRequestTick = xTaskGetTickCountFromISR();
+        s_pageRequestPending = 1U;
+        (void)xSemaphoreGiveFromISR(s_displayWake, &higherPriorityTaskWoken);
+        portEND_SWITCHING_ISR(higherPriorityTaskWoken);
+    }
+}
+
+/* 仅在释放端消抖，首次按下不等待扫描计数。调用方在临界区内执行。 */
+static void Page_UpdateRelease(uint8_t raw)
+{
+    if ((raw & 8U) == 0U)
+    {
+        if (s_pageReleaseTicks < 3U)++s_pageReleaseTicks;
+        if (s_pageReleaseTicks >= 3U && s_pageArmed == 0U)
+        {
+            s_pageArmed = 1U;
+            EXTI->PR = 8U;
+            NVIC_ClearPendingIRQ(EXTI3_IRQn);
+            EXTI->IMR |= 8U;
+            NVIC_EnableIRQ(EXTI3_IRQn);
+        }
+    }
+    else s_pageReleaseTicks = 0U;
+}
 typedef struct
 {
     char key;
@@ -184,7 +227,6 @@ static void InputTask(void *argument)
     uint8_t index;
     uint8_t counter = 4U;
     uint8_t stopHoldTicks = 0U;
-    uint8_t pageWasDown = 0U;
     uint8_t remoteRelease = 0U;
     uint8_t remoteKey;
     char serialCommand;
@@ -196,13 +238,22 @@ static void InputTask(void *argument)
     (void)argument;
     memset(debounce, 0, sizeof(debounce));
     memset(&sensor, 0, sizeof(sensor));
+    /* PA3 接 EXTI3；中断优先级13，允许调用 FreeRTOS 的 FromISR 接口。 */
+    AFIO->EXTICR[0] &= ~0xF000U;
+    EXTI->FTSR |= 8U;
+    EXTI->RTSR &= ~8U;
+    EXTI->PR = 8U;
+    s_pageArmed = 1U;
+    NVIC_SetPriority(EXTI3_IRQn, 13U);
+    EXTI->IMR |= 8U;
+    NVIC_EnableIRQ(EXTI3_IRQn);
 
     for (;;)
     {
         uint8_t raw = BSP_ReadButtonMask();
         TaskHeartbeat(3U);
 
-        for (index = 0U; index < 4U; ++index)
+        for (index = 0U; index < 3U; ++index)
         {
             uint8_t bit = (uint8_t)(1U << index);
             if ((raw & bit) != 0U)
@@ -221,9 +272,9 @@ static void InputTask(void *argument)
             else if (debounce[index] == 0U)
                 stable &= (uint8_t)~bit;
         }
-        if ((stable & 8U) != 0U && pageWasDown == 0U)
-            s_lcdSelection = s_lcdSelection < 3U ? (uint8_t)((s_lcdSelection + 1U) % 3U) : 0U;
-        pageWasDown = stable & 8U;
+        taskENTER_CRITICAL();
+        Page_UpdateRelease(raw);
+        taskEXIT_CRITICAL();
         sensor.buttonMask = stable;
         sensor.doorOpen = BSP_ReadDoorOpen();
         if ((stable & 0x04U) != 0U)
@@ -302,6 +353,8 @@ static void ControlTask(void *argument)
     UiSnapshot_t ui;
     EventMessage_t eventMessage;
     uint8_t eventCode;
+    uint32_t displayKey = 0xFFFFFFFFUL;
+    uint32_t newDisplayKey;
 
     (void)argument;
     memset(&sensor, 0, sizeof(sensor));
@@ -323,6 +376,15 @@ static void ControlTask(void *argument)
         BSP_ApplyActuators(&command);
         (void)xQueueSend(s_actuatorQueue, &command, 0);
         Shared_SetUi(&ui);
+        /* 阶段、程序、暂停或故障变化时立即通知显示，不依赖定时轮询。 */
+        newDisplayKey = (uint32_t)ui.state | ((uint32_t)ui.program << 8) |
+            ((uint32_t)ui.fault << 12) | ((uint32_t)ui.paused << 20) |
+            ((uint32_t)ui.cycleComplete << 21) | ((uint32_t)ui.selfTest << 22);
+        if (newDisplayKey != displayKey)
+        {
+            displayKey = newDisplayKey;
+            (void)xSemaphoreGive(s_displayWake);
+        }
 
         if (eventCode != 0U)
         {
@@ -396,24 +458,34 @@ static const char *FaultChinese(WashingFault_t fault)
 
 static void DisplayTask(void *argument)
 {
-    portTickType lastWake = xTaskGetTickCount();
-    uint32_t pageTimer = 0U;
+    portTickType pageChanged = xTaskGetTickCount();
+    portTickType paintStarted;
     uint8_t page = 0U;
     uint8_t previousSelection = 3U;
     SharedState_t shared;
     char line[32];
+    uint32_t visualKey;
+    uint32_t previousVisualKey = 0xFFFFFFFFUL;
 
     /* OLED 已在硬件初始化时清屏，不再重复传输整屏。 */
     (void)argument;
 
     for (;;)
     {
-        uint8_t selection = s_lcdSelection;
+        uint8_t selection;
+        uint8_t pageRequest;
+        portTickType requestedAt;
+        taskENTER_CRITICAL();
+        selection = s_lcdSelection;
+        pageRequest = s_pageRequestPending;
+        requestedAt = s_pageRequestTick;
+        s_pageRequestPending = 0U;
+        taskEXIT_CRITICAL();
         TaskHeartbeat(4U);
         Shared_Get(&shared);
 
         if (selection != previousSelection)
-            pageTimer = 0U;
+            pageChanged = xTaskGetTickCount();
         previousSelection = selection;
         if (shared.ui.state == WSTATE_FAULT)
         {
@@ -425,14 +497,16 @@ static void DisplayTask(void *argument)
         }
         else
         {
-            ++pageTimer;
-            if (pageTimer >= DISPLAY_PAGE_PERIOD_MS / DISPLAY_PERIOD_MS)
+            if ((portTickType)(xTaskGetTickCount() - pageChanged) >= MS_TO_TICKS(DISPLAY_PAGE_PERIOD_MS))
             {
-                pageTimer = 0U;
+                pageChanged = xTaskGetTickCount();
                 page = (uint8_t)((page + 1U) % 3U);
             }
         }
 
+        paintStarted = xTaskGetTickCount();
+        visualKey = shared.ui.state == WSTATE_FAULT ? 0x100U + shared.ui.fault : page;
+        LCD_BeginFrame(visualKey != previousVisualKey);
         if (shared.ui.state == WSTATE_FAULT)
         {
             LCD_PrintLine(0U, "\xE6\x95\x85\xE9\x9A\x9C\xE6\x8A\xA5\xE8\xAD\xA6");
@@ -463,7 +537,18 @@ static void DisplayTask(void *argument)
             LCD_PrintLine(3U, "\xE7\xBF\xBB\xE9\xA1\xB5\xE9\x94\xAE\xE5\x88\x87\xE6\x8D\xA2\xE9\xA1\xB5\xE9\x9D\xA2");
         }
 
-        vTaskDelayUntil(&lastWake, MS_TO_TICKS(DISPLAY_PERIOD_MS));
+        LCD_EndFrame();
+        if (pageRequest != 0U)
+        {
+            s_pageLatencyMs = (portTickType)(xTaskGetTickCount() - requestedAt) * portTICK_RATE_MS;
+            if (s_pageLatencyMs > s_pageMaxLatencyMs)s_pageMaxLatencyMs = s_pageLatencyMs;
+        }
+        previousVisualKey = visualKey;
+        s_displayPaintMs = (portTickType)(xTaskGetTickCount() - paintStarted) * portTICK_RATE_MS;
+        if (s_displayPaintMs > s_displayMaxPaintMs)
+            s_displayMaxPaintMs = s_displayPaintMs;
+        /* 二值信号合并重复请求；超时用于更新连续变化的参数。 */
+        (void)xSemaphoreTake(s_displayWake, MS_TO_TICKS(DISPLAY_PERIOD_MS));
     }
 }
 
@@ -511,6 +596,12 @@ static void Console_Diagnostics(void)
         (unsigned)uxQueueMessagesWaiting(s_eventQueue),
         (unsigned)uxQueueMessagesWaiting(s_commandQueue));
     UART1_Printf("receipt_dropped=%lu\r\n", (unsigned long)s_receiptDropped);
+    UART1_Printf("DISPLAY paint_ms=%lu max_paint_ms=%lu\r\n",
+        (unsigned long)s_displayPaintMs, (unsigned long)s_displayMaxPaintMs);
+    UART1_Printf("PAGE edge_to_done_ms=%lu max_ms=%lu bus_ok=%u\r\n",
+        (unsigned long)s_pageLatencyMs, (unsigned long)s_pageMaxLatencyMs, LCD_BusReady());
+    UART1_Printf("PAGE_KEY down=%u irq_enabled=%u\r\n",
+        (BSP_ReadButtonMask() & 8U) != 0U, (EXTI->IMR & 8U) != 0U);
     UART1_WriteString("TASK priority stack_min_bytes loops age_ms\r\n");
     for (index = 0U; index < 6U; ++index)
         UART1_Printf("%s %u %u %lu %lu\r\n", s_taskNames[index],
@@ -608,10 +699,12 @@ static void Console_Poll(void)
         case 'g': Console_Guide(); break;
         case '0': case '1': case '2':
             s_lcdSelection = (uint8_t)(key - '0');
+            (void)xSemaphoreGive(s_displayWake);
             UART1_Printf("LCD fixed page %u (fault overrides)\r\n", s_lcdSelection);
             break;
         case 'a':
             s_lcdSelection = 3U;
+            (void)xSemaphoreGive(s_displayWake);
             UART1_WriteString("LCD auto pages\r\n");
             break;
         case 'p': Console_Status(); break;
@@ -670,6 +763,13 @@ static void LoggerTask(void *argument)
                          record.drumRpm);
         }
     }
+}
+
+/* 空闲时等待中断，避免 Proteus 不断模拟无意义的空转指令。
+ * SysTick 每毫秒唤醒处理器，翻页外部中断也可立即唤醒。 */
+void vApplicationIdleHook(void)
+{
+    __WFI();
 }
 
 /* 动态内存申请失败时关闭中断并保持报警，停止正常任务运行。 */
@@ -739,6 +839,9 @@ void App_Run(void)
     CopySnapshot(&s_shared.lastLog, &boot, sizeof(s_shared.lastLog));
 
     s_sharedMutex = xSemaphoreCreateMutex();
+    vSemaphoreCreateBinary(s_displayWake);
+    if (s_displayWake != 0)
+        (void)xSemaphoreTake(s_displayWake, 0);
     s_sensorQueue = xQueueCreate(SENSOR_QUEUE_LENGTH, sizeof(SensorInput_t));
     s_actuatorQueue = xQueueCreate(ACTUATOR_QUEUE_LENGTH,
                                    sizeof(ActuatorCommand_t));
@@ -746,7 +849,7 @@ void App_Run(void)
     s_receiptQueue = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(CommandReceipt_t));
     s_eventQueue = xQueueCreate(EVENT_QUEUE_LENGTH, sizeof(EventMessage_t));
 
-    if (s_sharedMutex == 0 || s_sensorQueue == 0 || s_actuatorQueue == 0 ||
+    if (s_displayWake == 0 || s_sharedMutex == 0 || s_sensorQueue == 0 || s_actuatorQueue == 0 ||
         s_eventQueue == 0 || s_commandQueue == 0 || s_receiptQueue == 0)
     {
         BSP_SetBuzzer(1U);

@@ -8,6 +8,11 @@
 #include <stdarg.h>
 #include <string.h>
 #include "oled_font.h"
+
+/* 仅对点阵驱动启用局部优化，减少逐位总线发送的指令开销。 */
+#ifdef __CC_ARM
+#pragma O2
+#endif
 static unsigned char screen[1024];
 static volatile unsigned char rowBuffer[256];
 static unsigned char busReady;
@@ -15,15 +20,32 @@ static unsigned char cursorRow;
 static char textBuffer[64];
 /* 缓存上一帧文本，内容未变时跳过字模查找与点阵生成。 */
 static char lastLines[4][64];
+/* 前台缓冲代表已显示内容；后台缓冲用于完整页面合成。 */
+static volatile unsigned char backBuffer[1024];
+static unsigned char dirtyStart[8], dirtyEnd[8];
+static unsigned char frameActive, hideDuringFlush;
 #define SCL(v) do { if(v) GPIOB->BSRR=GPIO_Pin_0; else GPIOB->BRR=GPIO_Pin_0; } while(0)
 #define SDA(v) do { if(v) GPIOB->BSRR=GPIO_Pin_1; else GPIOB->BRR=GPIO_Pin_1; } while(0)
-static void PauseBus(void) { __NOP(); __NOP(); __NOP(); __NOP(); }
+/* 使用内联延时，避免每一位数据反复调用延时函数。
+ * 显式保留时钟高低电平的最小延时，不能直接删空。 */
+#define PauseBus() do { __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); } while(0)
 static void StartBus(void) { SDA(1);SCL(1);PauseBus();SDA(0);PauseBus();SCL(0); }
 static void StopBus(void) { SDA(0);SCL(1);PauseBus();SDA(1);PauseBus(); }
 static unsigned char SendByte(unsigned char v)
 {
- unsigned char i,ack;
- for(i=0;i<8;i++){SDA(v&128);PauseBus();SCL(1);PauseBus();SCL(0);v<<=1;}
+ unsigned char ack;
+ /* 八位展开，去掉逐位循环和多余延时；仍保留时钟高低电平时间。
+  * 该时序用于本工程固定的8MHz时钟，不能直接用于提高主频后的实机。 */
+#define SEND_BIT() do { \
+ SDA(v&128U);v<<=1; \
+ __NOP();__NOP();__NOP();__NOP();__NOP();__NOP(); \
+ SCL(1); \
+ __NOP();__NOP();__NOP();__NOP();__NOP(); \
+ SCL(0); \
+ } while(0)
+ SEND_BIT();SEND_BIT();SEND_BIT();SEND_BIT();
+ SEND_BIT();SEND_BIT();SEND_BIT();SEND_BIT();
+#undef SEND_BIT
  SDA(1);PauseBus();SCL(1);PauseBus();ack=(GPIOB->IDR&GPIO_Pin_1)==0;SCL(0);return ack;
 }
 static void Command(unsigned char c) { StartBus();SendByte(0x78);SendByte(0);SendByte(c);StopBus(); }
@@ -89,11 +111,46 @@ void LCD_PrintLine(uint8_t row,const char *text)
    last=k;
   }
   if(first<128){
-   for(k=first;k<=last;k++)((volatile unsigned char *)screen)[(row*2+j)*128+k]=rowBuffer[j*128+k];
-   WriteRange((unsigned char)(row*2+j),(unsigned char)first,(unsigned char)last,screen+(row*2+j)*128);
+   if(frameActive){
+    for(k=first;k<=last;k++)backBuffer[(row*2+j)*128+k]=rowBuffer[j*128+k];
+    dirtyStart[row*2+j]=(unsigned char)first;
+    dirtyEnd[row*2+j]=(unsigned char)last;
+   }else{
+    for(k=first;k<=last;k++)((volatile unsigned char *)screen)[(row*2+j)*128+k]=rowBuffer[j*128+k];
+    WriteRange((unsigned char)(row*2+j),(unsigned char)first,(unsigned char)last,screen+(row*2+j)*128);
+   }
   }
  }
 }
+/* 合成阶段不访问屏幕，避免新旧页面同时出现在同一帧。 */
+void LCD_BeginFrame(uint8_t pageChange)
+{
+ unsigned int k;
+ for(k=0;k<1024;k++)backBuffer[k]=((volatile unsigned char *)screen)[k];
+ for(k=0;k<8;k++){dirtyStart[k]=128;dirtyEnd[k]=0;}
+ hideDuringFlush=pageChange;
+ frameActive=1;
+}
+
+/* SSD1306 没有第二块全屏显存；换页传输期间关闭显示，完成后统一点亮。
+ * 普通数字局部更新不关闭显示，避免连续刷新导致闪烁。 */
+void LCD_EndFrame(void)
+{
+ unsigned int page,k;
+ unsigned char changed=0;
+ for(page=0;page<8;page++)if(dirtyStart[page]<128)changed=1;
+ if(changed){
+  if(hideDuringFlush)Command(0xAE);
+  for(page=0;page<8;page++)if(dirtyStart[page]<128){
+   for(k=dirtyStart[page];k<=dirtyEnd[page];k++)
+    ((volatile unsigned char *)screen)[page*128+k]=backBuffer[page*128+k];
+   WriteRange((unsigned char)page,dirtyStart[page],dirtyEnd[page],screen+page*128);
+  }
+  if(hideDuringFlush)Command(0xAF);
+ }
+ frameActive=0;
+}
+
 void LCD_SetCursor(uint8_t row,uint8_t column) { (void)column;cursorRow=row;textBuffer[0]=0; }
 void LCD_WriteChar(char value) { unsigned int n=strlen(textBuffer);if(n<sizeof(textBuffer)-1){textBuffer[n]=value;textBuffer[n+1]=0;}LCD_PrintLine(cursorRow,textBuffer); }
 void LCD_WriteString(const char *text) { LCD_PrintLine(cursorRow,text); }

@@ -9,5 +9,7 @@
   "display_check_ms": 100,
   "proteus": "8.17",
   "compiler": "ARMCC 5.06 update 5",
-  "hex_sha256": "9f0c3e4b305ca801fb0e4ce0b18b1dc8def94be3a6097186b8f4601829e72a22"
+  "hex_sha256": "cde616f6c1d34af0874a270e49a5f0843e74feaf4fa9daa28e59186d85d56554",
+  "revision": "2026-11-26-page-response",
+  "known_issue": "Proteus 手动翻页按钮回弹卡顿尚未确认修复，详见 Validation/翻页回弹原因排查.txt"
 }

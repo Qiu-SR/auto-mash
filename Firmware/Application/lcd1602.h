@@ -6,6 +6,8 @@
 uint8_t LCD_BusReady(void);
 void LCD_Init(void);
 void LCD_Clear(void);
+void LCD_BeginFrame(uint8_t pageChange);
+void LCD_EndFrame(void);
 void LCD_SetCursor(uint8_t row, uint8_t column);
 void LCD_WriteChar(char value);
 void LCD_WriteString(const char *text);

@@ -1,0 +1,11 @@
+# 编译输出及个人界面配置；根目录 HEX 是可运行交付件，纳入版本管理。
+Firmware/Objects/
+Firmware/Listings/
+*.uvguix.*
+*.uvoptx
+*.workspace
+*.bak
+*.tmp
+__pycache__/
+*.pyc
+*.zip

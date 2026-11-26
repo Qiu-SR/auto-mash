@@ -1,0 +1,16 @@
+﻿2026-11-25：中文注释覆盖更新。逐文件核对后，去除注释的代码标记序列完全一致。
+修改文件：
+Firmware\Application\app_config.h
+Firmware\Application\app_tasks.c
+Firmware\Application\bsp.c
+Firmware\Application\flash_log.c
+Firmware\Application\lcd1602.c
+Firmware\Application\washer_control.c
+Firmware\Application\washer_plant.c
+Firmware\Application\washer_types.h
+Firmware\User\main.c
+Firmware\User\stm32f10x_it.c
+Firmware\FreeRTOS\include\FreeRTOSConfig.h
+Keil ARMCC 5.06 编译：0 错误、0 警告。
+修改前后 HEX 的 SHA256 相同：918c6df27dc3637864aafcdc88e6730448205dbbe36e5571b3ff4ee7d1f49ce1
+厂商库、内核原始文档与版权许可证保留。

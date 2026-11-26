@@ -1,0 +1,80 @@
+全自动洗衣机课程仿真说明
+
+打开 Proteus_Demo 文件夹内的 Washer.pdsprj，按 F12 或左下角三角形开始仿真。
+工程与 WashingMachine.hex 保持在同一文件夹。Keil 源码位于 Firmware/Washer_Demo.uvprojx。
+使用 Keil ARMCC 5.06 编译，编译后自动复制 HEX 到仿真工程目录。
+
+输入与输出
+RV1 调整衣物重量，RV2 调整污浊度。点击电位器旁的红色调节符号。
+SW1 是门开关，闭合表示关门，断开表示开门。
+MODE 在待机时循环选择 AUTO、QUICK、STD、HEAVY、WOOL。
+START 启动、暂停、继续，故障后在关门状态按 START 清除故障。
+STOP 运行时急停，待机时按住约 1.5 秒触发自检演示。
+按键带消抖，手动按住约 0.2 秒后松开。
+四只 LED 依次表示进水、排水、加热、门锁。
+L293D 驱动电机模型，PA6 提供 PWM，PB6/PB7 控制方向。
+LCD 每 3 秒轮换页面。若串口窗口隐藏，在 Debug 菜单打开 Virtual Terminal。
+串口参数为 115200、8N1。
+
+课堂演示顺序
+1. 运行后观察 IDLE AUTO 和重量、污浊度百分比。
+2. MODE 选择 QUICK，确认关门后按 START。
+3. 观察锁门、进水、加热、正反转洗涤、排水、漂洗、脱水、停机、解锁。
+4. 洗涤中按 START 暂停，再按继续。
+5. 运行中打开 SW1，观察 DOOR OPEN 报警、排水灯点亮、电机和加热关闭。
+6. 关门后 START 清除故障。重新启动后 STOP 演示急停。
+7. 待机时长按 STOP，观察 SELF TEST 自动注入门故障及自动恢复。
+
+演示构建的调整
+主时钟使用外部 8 MHz，FreeRTOS 时钟配置同步改为 8 MHz。
+TIM3 预分频为 3，ARR 为 99，PWM 频率为 20 kHz。
+ADC 使用 PCLK2/2。Proteus MCU 属性 OSC 为 8000000，CLOCK_SCALE 为 0。
+任务共享结构体使用显式字节复制，解决本机模型中多字传输产生的显示数据错位。
+LCD 待机页增加程序名与两路输入百分比。
+首次输入扫描立即读取 ADC。
+工程编译参数包含 --no_unaligned_access。
+水位、水温、污浊度变化和不平衡量采用原项目的软件模型。
+指示灯表示执行器开关，电机图形展示方向与运行情况，转速数值由软件模型计算。
+
+引脚映射
+PA0 重量 ADC，PA1 污浊度 ADC，PA2 门开关，PA6 PWM，PA7 蜂鸣器。
+PA9 串口 TX，PA10 串口 RX。
+PB0 LCD RS，PB1 LCD E，PB3/PB4/PB5/PB15 对应 LCD D4/D5/D6/D7。
+PB6/PB7 电机方向，PB8 进水，PB9 排水，PB10 加热，PB11 门锁。
+PB12 MODE，PB13 START，PB14 STOP。
+LCD RW 接地，VDD 为 5 V。MCU 的 VDD 为 3.3 V，电机供电 12 V。
+
+展示时可围绕六个 FreeRTOS 任务展开，分别说明安全检测、控制状态机、
+对象模型、输入采集、LCD 显示和 Flash/串口日志。
+任务间使用队列传递传感器及执行器命令，互斥锁保护共享快照。
+仿真速度受电脑负载影响，以 Proteus 左下角的仿真时间判断阶段计时。
+
+本机验证记录
+2026-11-23，Proteus 8.17 SP2，Keil ARMCC 5.06。
+演示工程重新编译为 0 Error(s), 0 Warning(s)，输出 HEX 与 MCU 加载文件哈希一致。
+已观察 LCD 待机程序及两路 ADC 百分比显示。
+已观察启动、进水、加热、洗涤电机驱动和门锁 LED 联动。
+已在运行中断开门开关，LCD 显示 FAULT DOOR OPEN，排水点亮。
+已关门并按 START，返回 IDLE AUTO。
+已用 MODE 切换 QUICK 并重新启动，LCD 显示 FILLING QUICK 和水位上升。
+补充验证结果（2026-11-23）
+完整 QUICK 周期通过。LCD 出现 CYCLE COMPLETE 与 P:QUICK，门锁输出释放。
+暂停通过。洗涤阶段显示 WASH REV PAUSE，LOG PAUSE，模型转速降到 0。
+继续通过。再次按 START 后显示 LOG RESUME，洗涤驱动恢复。
+急停通过。运行时 STOP 后显示 FAULT E-STOP 与 START = RESET，排水开启，
+电机驱动与加热关闭。释放 STOP 后用 START 可复位。
+一键自检通过。待机长按 STOP 后注入门故障，LCD 显示 FAULT DOOR OPEN，
+排水、门锁与报警输出开启，随后自动返回 IDLE STD，执行器输出关闭。
+
+本次修正
+SafetyTask 在 selfTest 标志生效时跳过持续按住 STOP 的急停判定，
+避免长按启动自检后覆盖计划注入的门故障。普通运行仍执行急停判定。
+修正后重新编译通过，0 Error(s), 0 Warning(s)。
+
+Proteus 按键操作补充
+按键右侧的小红点支持保持按下状态，点击后可观察 MCU 对应输入变低，
+再次点击释放后输入变高。连续两次操作之间留出消抖时间。
+长按自检可用小红点保持 STOP，待演示结束后再次点击释放。
+模拟结束后建议停止再运行，开始前确认 MODE、START、STOP 均已释放。
+本次完整周期、暂停继续与普通急停在修正前验证，自检在修正后复测。
+本次功能检查覆盖上述课堂流程，未逐项穷举所有配方和故障组合。

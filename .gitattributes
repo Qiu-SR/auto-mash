@@ -1,0 +1,9 @@
+* text=auto
+*.c text eol=crlf
+*.h text eol=crlf
+*.s text eol=crlf
+*.ps1 text eol=crlf
+*.md text eol=lf
+*.json text eol=lf
+*.pdsprj binary
+*.hex -text

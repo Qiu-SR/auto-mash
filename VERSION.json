@@ -1,0 +1,13 @@
+{
+  "version": "2.2.0",
+  "updated": "2026-11-26",
+  "name": "STM32全自动洗衣机中文课堂仿真",
+  "variant": "中文OLED、手动翻页及响应优化",
+  "mcu": "STM32F103C8",
+  "system_clock_hz": 8000000,
+  "motor_pwm_hz": 1000,
+  "display_check_ms": 100,
+  "proteus": "8.17",
+  "compiler": "ARMCC 5.06 update 5",
+  "hex_sha256": "9f0c3e4b305ca801fb0e4ce0b18b1dc8def94be3a6097186b8f4601829e72a22"
+}

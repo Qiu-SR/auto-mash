@@ -1,0 +1,57 @@
+课堂优化版 v2 验证记录
+验证日期：2026-11-24；本机 Proteus 8.17、Keil ARMCC 5.06。
+
+构建
+0 Error(s), 0 Warning(s)。
+Code=26804，RO-data=2080，RW-data=240，ZI-data=15456。
+Proteus 使用相对路径 WashingMachine.hex，根目录 HEX 与 Objects 中的 HEX 一致。
+
+Proteus 现场验证
+启动显示 Classroom washer v2 ready。
+g：待机、运行、故障的提示均有响应。
+?：显示全部原有及新增命令；未知字符 / 返回 ERROR unknown key。
+r：首次空闲堆 3512 字节，rx_dropped=0，receipt_dropped=0；
+六个任务优先级依次为 5、4、3、3、2、1，loops 与 age_ms 均输出。
+持续运行后再次查询，空闲堆仍为 3512，两个丢失计数均为 0。
+该次任务最小栈余量：560、1156、512、580、640、1000 字节。
+0、1、2：分别固定总览、传感器、输出页，已观察 LCD 对应内容。
+a：恢复自动翻页，随后观察到传感器页。
+2 页完整显示 I0 D0 H0 LOCK0；b 生效后显示 INJECT I0 D0 B1。
+故障覆盖固定页，LCD 显示 FAULT IMBALANCE / START = RESET。
+i、d：回执依次为 inject=1、inject=3；c 清为 inject=0。
+b：回执 inject=4；QUICK 在 155 秒启动、176 秒进入 SPIN UP，
+182 秒触发 IMBALANCE；p 查询不平衡量 950，随后转速降至 0。
+c、s：清除注入条件并 RESET 至 IDLE。
+h：247 秒触发 OVER TEMP；s 在 255 秒 RESET。
+这是故障码注入验证，温度仍是 25.0 摄氏度。
+t：262 秒启动、264 秒出现 DOOR OPEN、266 秒自动 RESET。
+最终构建重载后，t 又完成两次自检与自动恢复。
+x：洗涤运行中触发 E-STOP；s 成功复位。
+l：回读 21 条事件，含不平衡、超温、自检门故障与急停，顺序与运行日志一致。
+最后一次 p：IDLE STD、fault=NONE、pause=0、RPM=0、inject=0、selftest=0，
+四路输出均为 0。当前工程留在待机，自动翻页开启。
+
+验证范围说明
+本轮新增的回执、任务活动信息、LCD 页面选择与上下文提示已验证。
+进排水超时、暂停继续及遥测的 Proteus 验证记录见随包旧版增强指南。
+本轮另用模型回归复核进排水超时及暂停继续，未重新计时演示全部旧功能。
+自检状态下 g 的提示优先级已在最终源码修正并编译；
+本轮未在自检的短暂故障窗口中单独观察到该提示文本。
+
+可重复模型回归
+Validation/test.c 编译链接本包真实 washer_control.c、washer_plant.c。
+七项 PASS：快速洗涤完成、进水超时、排水超时、不平衡重试、
+暂停继续、超温分支、自检恢复。
+这些检查验证控制状态机与对象模型，不覆盖 FreeRTOS 调度或硬件外设。
+复核方式（需要自行已有的 Zig C 工具链）：
+PowerShell 中执行 Validation/Run-ModelChecks.ps1 -ZigPath 'Zig可执行文件绝对路径'。
+运行脚本不要求重新生成 Proteus 电路。
+
+2026-11-25 注释中文化覆盖更新
+Application、User 及 FreeRTOSConfig.h 共 11 个文件更新中文注释。
+去除注释后的代码标记序列保持一致；编译 0 错误、0 警告，HEX 与修改前完全一致。
+详细记录见 Validation/comment-translation-check.txt。
+
+2026-11-26：中文 OLED 与手动翻页改造已完成，最新验证见 Validation/中文屏验证记录.txt。
+
+响应优化：显示缓存及局部刷新、100ms显示检查、1kHz课堂PWM。详见Validation/响应优化说明.txt。

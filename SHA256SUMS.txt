@@ -1,0 +1,2 @@
+d77a5f20addf7f8f4ab5b67a15b8fbc0979266fa3fe9e81d777f2db898fc9758  Washer.pdsprj
+9f0c3e4b305ca801fb0e4ce0b18b1dc8def94be3a6097186b8f4601829e72a22  WashingMachine.hex
